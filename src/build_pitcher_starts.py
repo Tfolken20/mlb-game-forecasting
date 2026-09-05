@@ -84,6 +84,13 @@ def main():
     # last inning the starter appeared in. This is a known approximation.
     starts = starts.drop(columns=["outs_recorded"])
 
+    # A handful of "starts" end before a plate appearance completes (injury,
+    # ejection). They carry no information and produce division-by-zero.
+    degenerate = starts["batters_faced"] == 0
+    if degenerate.any():
+        print(f"dropping {degenerate.sum()} starts with 0 batters faced", flush=True)
+        starts = starts[~degenerate].copy()
+
     starts["k_rate"] = starts["strikeouts"] / starts["batters_faced"]
     starts["bb_rate"] = starts["walks"] / starts["batters_faced"]
     starts["run_exp_per_bf"] = starts["run_exp_total"] / starts["batters_faced"]
