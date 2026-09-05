@@ -13,6 +13,13 @@ correlation at the 8-start window actually used here:
 run_exp_per_bf and hr_rate are deliberately excluded. Both describe past
 performance well but are dominated by batted-ball luck at this sample size.
 
+ERA BOUNDARY: xwOBA requires Statcast tracking and does not exist before 2015.
+Release velocity, strikeouts, walks and run expectancy are available from 2010.
+Every rolling metric therefore tracks its numerator and denominator as a
+MATCHED PAIR -- a start missing a metric contributes to neither. Counting a
+missing xwOBA as zero while still counting its batters would record every
+pre-2015 start as a perfect performance.
+
 Rate metrics are accumulated as summed numerators over summed denominators,
 not as averages of per-start averages, so a 30-batter start weighs more than
 a 12-batter one.
@@ -46,17 +53,15 @@ def main():
     df = df.sort_values(["date", "game_pk"]).reset_index(drop=True)
     print(f"starts: {len(df):,}", flush=True)
 
-    # Rolling windows of raw counts, so rates are properly batter-weighted.
-    # velo and velo_pit are tracked as a matched pair: a start with missing
-    # velocity contributes to neither, so the denominator can never include
-    # innings the numerator is missing.
+    # Every metric tracks numerator and denominator as a matched pair, so a
+    # start with a missing metric contributes to neither side of the ratio.
     w = defaultdict(lambda: {
-        "bf": deque(maxlen=WINDOW), "k": deque(maxlen=WINDOW),
-        "bb": deque(maxlen=WINDOW), "xw": deque(maxlen=WINDOW),
-        "pit": deque(maxlen=WINDOW),
+        "bf": deque(maxlen=WINDOW),
+        "k": deque(maxlen=WINDOW),
+        "bb": deque(maxlen=WINDOW),
+        "xw": deque(maxlen=WINDOW), "xw_bf": deque(maxlen=WINDOW),
         "velo": deque(maxlen=WINDOW), "velo_pit": deque(maxlen=WINDOW),
     })
-    # Career baseline for velocity, accumulated as running sums.
     base = defaultdict(lambda: {"velo_sum": 0.0, "pit_sum": 0.0, "n": 0})
 
     rows = []
@@ -78,7 +83,7 @@ def main():
             "sp_prior_starts": n_prior,
             "sp_k_rate": safe_div(sum(s["k"]), bf_sum),
             "sp_bb_rate": safe_div(sum(s["bb"]), bf_sum),
-            "sp_xwoba": safe_div(sum(s["xw"]), bf_sum),
+            "sp_xwoba": safe_div(sum(s["xw"]), sum(s["xw_bf"])),
             "sp_bf_per_start": safe_div(bf_sum, n_prior),
             "sp_velo_recent": recent_velo,
             "sp_velo_delta": (recent_velo - baseline_velo)
@@ -90,8 +95,10 @@ def main():
         s["bf"].append(r.batters_faced)
         s["k"].append(r.strikeouts)
         s["bb"].append(r.walks)
-        s["xw"].append((r.xwoba_mean * r.batters_faced) if pd.notna(r.xwoba_mean) else 0.0)
-        s["pit"].append(r.pitches)
+
+        if pd.notna(r.xwoba_mean):
+            s["xw"].append(r.xwoba_mean * r.batters_faced)
+            s["xw_bf"].append(r.batters_faced)
 
         if pd.notna(r.velo_mean):
             s["velo"].append(r.velo_mean * r.pitches)

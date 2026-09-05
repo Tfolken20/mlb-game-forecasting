@@ -20,9 +20,9 @@ from velocity_edge import bridge_game_ids
 ROOT = Path(__file__).resolve().parent.parent
 MODELING = ROOT / "data" / "processed" / "modeling.parquet"
 
-LOCKBOX_SEASONS = [2021]        # do not touch until a hypothesis is final
+LOCKBOX_SEASONS = [2024]        # do not touch until a hypothesis is final
 FEATURES = ["elo_diff", "team_net_diff", "home_sp_rest_capped", "vis_sp_rest_capped",
-            "sp_k_rate_diff", "sp_bb_rate_diff", "sp_xwoba_diff", "sp_velo_delta_diff"]
+            "sp_k_rate_diff", "sp_bb_rate_diff", "sp_velo_delta_diff"]
 N_BOOT = 2000
 RNG = np.random.default_rng(17)
 

@@ -27,7 +27,7 @@ MODELING = ROOT / "data" / "processed" / "modeling.parquet"
 PITCHER = ROOT / "data" / "processed" / "pitcher_features.parquet"
 STARTS = ROOT / "data" / "processed" / "pitcher_starts.parquet"
 
-LOCKBOX = [2021]
+LOCKBOX = [2024]
 PRIMARY_THRESHOLD = -2.0
 SENSITIVITY = [-1.0, -1.5, -2.0, -2.5, -3.0]
 N_BOOT = 5000

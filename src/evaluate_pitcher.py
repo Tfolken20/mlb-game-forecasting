@@ -18,7 +18,7 @@ STARTS = ROOT / "data" / "processed" / "pitcher_starts.parquet"
 OLD = ["elo_diff", "sp_runs_diff", "team_net_diff",
        "home_sp_rest_capped", "vis_sp_rest_capped"]
 NEW = ["elo_diff", "team_net_diff", "home_sp_rest_capped", "vis_sp_rest_capped",
-       "sp_k_rate_diff", "sp_bb_rate_diff", "sp_xwoba_diff", "sp_velo_delta_diff"]
+       "sp_k_rate_diff", "sp_bb_rate_diff", "sp_velo_delta_diff"]
 
 
 def walk_forward(df, cols, label):
