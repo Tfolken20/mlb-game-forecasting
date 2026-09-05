@@ -15,12 +15,14 @@ from sklearn.impute import SimpleImputer
 
 from metrics import log_loss
 
+from velocity_edge import bridge_game_ids
+
 ROOT = Path(__file__).resolve().parent.parent
 MODELING = ROOT / "data" / "processed" / "modeling.parquet"
 
 LOCKBOX_SEASONS = [2021]        # do not touch until a hypothesis is final
-FEATURES = ["elo_diff", "sp_runs_diff", "team_net_diff",
-            "home_sp_rest_capped", "vis_sp_rest_capped"]
+FEATURES = ["elo_diff", "team_net_diff", "home_sp_rest_capped", "vis_sp_rest_capped",
+            "sp_k_rate_diff", "sp_bb_rate_diff", "sp_xwoba_diff", "sp_velo_delta_diff"]
 N_BOOT = 2000
 RNG = np.random.default_rng(17)
 
@@ -83,6 +85,9 @@ def define_subsets(df):
 
 def main():
     df = pd.read_parquet(MODELING)
+    pf = pd.read_parquet(ROOT / "data" / "processed" / "pitcher_features.parquet")
+    pf = pf.merge(bridge_game_ids(), on="game_pk", how="inner")
+    df = df.merge(pf.drop(columns=["game_pk"]), on="game_id", how="left")
     df = df[df["p_market_home"].notna()]
 
     held = df[df["season"].isin(LOCKBOX_SEASONS)]
