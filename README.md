@@ -1,17 +1,60 @@
 # MLB Game Forecasting
 
-Forecasting MLB game outcomes with strictly point-in-time features, evaluated
-walk-forward against the closing betting line across fifteen seasons.
+**Can a well-built forecasting model beat an existing market-priced benchmark?
+Here, no — and establishing that rigorously is the result.**
 
-The goal is not a high accuracy number. It is a pipeline where every prediction
-uses only information available before first pitch, every metric is screened for
-reliability before it is used, every hypothesis is registered before it is
-tested, and the benchmark is one that is genuinely hard to beat.
+|  |  |
+|---|---|
+| **Question** | Can a model trained on public baseball data outperform the betting market's closing price at forecasting game outcomes? |
+| **Data** | 34,015 games (2010-2024), 10.0M pitches, and 32,523 closing moneylines from two independent odds sources |
+| **Method** | Point-in-time features with no lookahead, walk-forward evaluation, metrics screened for reliability before use, hypotheses pre-registered with a held-out season |
+| **Result** | The model beats a naive baseline decisively (log loss 0.679 vs 0.691) and loses to the market (0.673). Four separate attempts to find an exploitable gap all failed. |
+| **Takeaway** | A model can be correct, well-validated, and still not worth deploying. Knowing that *before* acting on it — and knowing precisely why — is the deliverable. |
+
+The generalizable version: when an incumbent benchmark already exists, the
+useful question is not "is my model good?" but "is it better than what is
+already there, and if not, what specifically does the incumbent know?" This
+project answers both.
+
+![Calibration curve](reports/calibration.png)
+
+## How to reproduce
+
+    conda create -n mlb python=3.12 -y
+    conda activate mlb
+    pip install pybaseball pandas pyarrow scikit-learn matplotlib openpyxl
+
+Fetch data (Windows syntax; bash equivalents in `data/README.md`):
+
+    for %y in (2010 2011 2012 2013 2014 2015 2016 2017 2018 2019 2021 2022 2023 2024) do python src\fetch_gamelogs.py %y
+    for %y in (2010 2011 2012 2013 2014 2015 2016 2017 2018 2019 2021 2022 2023 2024) do python src\fetch_statcast.py %y
+
+Odds workbooks must be downloaded by hand — both sources block automated access.
+`data/README.md` lists exactly which files and where they go. Then:
+
+    python src/build_spine.py            # one row per game, unique IDs
+    python src/build_features.py         # point-in-time team and Elo features
+    python src/build_odds.py             # parse Excel archive (2010-2019)
+    python src/build_odds_json.py        # parse JSON dataset (2021-2024)
+    python src/compare_odds_sources.py   # cross-source validation
+    python src/join_odds.py              # union, validate against scores
+    python src/build_pitcher_starts.py   # 10M pitches -> 68K starts
+    python src/stabilization.py          # reliability screen
+    python src/build_pitcher_features.py
+    python src/evaluate_market.py        # headline result
+    python src/compare_models.py         # logistic vs GBM vs stacking
+    python src/find_edges.py             # pre-registered subsets
+    python src/velocity_edge.py          # pre-registered hypothesis
+    python src/park_edge.py              # pre-registered hypothesis
+    python src/make_charts.py            # figures in reports/
+
+No data files are committed. Everything except the odds workbooks rebuilds from
+scratch.
 
 ## Headline result
 
-Evaluated on 27,992 games (2012-2024) with closing moneylines attached,
-predicting the home team's win probability:
+Evaluated on 27,992 games (2012-2024), predicting the home team's win
+probability:
 
 | Model | Log loss | Brier | Accuracy |
 |---|---|---|---|
@@ -22,71 +65,49 @@ predicting the home team's win probability:
 | **Market (closing moneyline)** | **0.67318** | **0.24020** | **58.1%** |
 | Statcast features + market price | 0.67346 | 0.24033 | 58.0% |
 
-**The market wins.** Adding every engineered feature on top of the market price
-makes the prediction slightly *worse*. The model's features carry real signal —
-they beat the base rate decisively — but that information is already inside the
-closing line.
+Adding every engineered feature *on top of* the market price makes the
+prediction slightly worse. The features carry real signal, but it is already
+inside the closing line.
 
-## Four independent attempts to find an edge, and four failures
+The calibration curve above shows something more precise than "the market is
+better." Both are equally well calibrated — when either says 55%, that happens
+about 55% of the time. The market's advantage is **sharpness**: it makes more
+confident predictions that are more often right.
 
-The interesting part of this project is not the headline number. It is that the
-same conclusion was reached four separate ways, each attacking a different
-possible explanation for the gap.
+## Four independent attempts to find an edge
+
+The interesting part is not the headline number. It is that the same conclusion
+was reached four ways, each ruling out a different explanation for the gap.
 
 | Attempt | Premise | Result |
 |---|---|---|
-| **Better features** | The market knows something we don't measure | Statcast pitcher metrics closed a quarter of the gap, then stopped |
-| **A reliable signal the market ignores** | Velocity decline is observable but not headline news | Effect shrank 82% as data tripled; rejected |
+| **Better features** | The market measures something we don't | Statcast pitcher metrics closed a quarter of the gap, then stopped |
+| **A reliable signal it ignores** | Velocity decline is observable but not headline news | Effect shrank 82% as data tripled; rejected |
 | **A mechanism nobody prices** | Bullpen depletion is invisible and unposted | 98% redundant with team strength; rejected |
 | **A better model class** | The relationships are nonlinear | Gradient boosting was *worse*; stacking was a tie |
-| **A second-moment effect** | Park changes variance, not strength | Market prices it fully; rejected |
+| **A second-moment effect** | Park changes variance, not team strength | Market prices it fully; rejected |
 
-Each is documented below with its pre-registered mechanism and its data.
+### A hypothesis that died correctly
 
-## Which pitcher metrics are worth using
+![Velocity effect regressing to zero](reports/velocity_decay.png)
 
-Before building any pitcher feature, each candidate was tested for split-half
-reliability: for a pitcher with at least 2k starts in a season, split k starts
-into each of two piles at random and correlate the metric across piles.
+**Mechanism, stated before testing:** velocity is publicly observable but not a
+headline number, and books price primarily off results. A starter throwing 2+
+mph below his own baseline shows a physical signal of fatigue or injury before
+it reaches his ERA. Velocity delta is the most reliable measurement available
+(split-half r = 0.978), so a 2 mph deviation is signal, not noise.
 
-Measured at k = 8, the rolling window the model uses:
+The effect shrank by 82% as the sample tripled. A real effect holds its
+magnitude and tightens its interval; this one decayed toward zero.
 
-| Metric | r at k=8 | Verdict |
-|---|---|---|
-| Release velocity | **0.978** | Physical measurement; near-perfect |
-| Strikeout rate | **0.645** | Stabilized |
-| Walk rate | 0.427 | Nearly stabilized |
-| xwOBA on contact | 0.392 | Marginal |
-| Run expectancy per batter faced | 0.230 | Mostly noise at this window |
-| Home run rate | 0.160 | Noise |
+The early result was directionally correct, monotonic across thresholds, and
+entirely spurious. **Stopping at six seasons would have produced a "finding."**
 
-**Descriptive accuracy and predictive value run opposite here.** Run expectancy
-per batter faced is the best available description of what a pitcher did.
-Sorting all 68,020 starts by it returns, in order: Verlander's 2019 no-hitter,
-German's 2023 perfect game, Braden's 2010 perfect game, Halladay's 2010 perfect
-game, Cain's 2012 perfect game, and Hernandez's 2012 perfect game — every
-perfect game of the era, surfaced by a metric never told what one is.
+### Bullpen workload: a mechanism that was really a proxy
 
-It is also the *least* reliable metric in the table at an 8-start window,
-because it embeds batted-ball outcomes that depend on defense, park, and luck.
-It was excluded, along with home run rate — whose 0.160 reliability
-independently replicates the known result that pitchers exert little control
-over home runs per fly ball.
-
-## Screening kills features that look promising
-
-Reliability screening is not a formality. Two feature families passed a
-plausibility check and failed the data.
-
-### Bullpen workload: a mechanism that turned out to be a proxy
-
-**Mechanism:** a bullpen that threw heavily over the previous two or three days
-has fewer rested high-leverage arms. Books price starters explicitly and
-publicly; relief availability is posted nowhere.
-
-Relief pitches were computed per team per game from 10 million Statcast pitches
-and rolled forward by *calendar day*, since an off day restores a bullpen and a
-doubleheader depletes it twice. Four checks:
+**Mechanism:** a bullpen that threw heavily over the prior two or three days has
+fewer rested arms. Books price starters explicitly; relief availability is
+posted nowhere.
 
 | Check | Result | Reading |
 |---|---|---|
@@ -95,283 +116,206 @@ doubleheader depletes it twice. Four checks:
 | Raw association with winning | r = +0.027 | Looks promising |
 | **Residual after removing Elo and run differential** | **r = +0.0005** | **Entirely redundant** |
 
-The raw correlation of +0.027 would have looked like a modest real signal to
-anyone who checked only that. But bullpen workload correlates **+0.22 with team
-run differential** and **+0.16 with Elo** — bad teams burn their bullpens. It is
-a team-quality proxy wearing a fatigue label, and 98% of its apparent signal
-disappears once team strength is removed.
+The raw +0.027 would have looked like a modest real signal to anyone who
+checked only that. But bullpen workload correlates **+0.22 with team run
+differential** — bad teams burn their bullpens. It is a team-quality proxy
+wearing a fatigue label, and 98% of its apparent signal vanishes once team
+strength is removed.
 
-The feature was not added. Unscreened, it would have added variance under a
-misleading name and been nearly impossible to diagnose later.
-
-### Park factors: the market already prices the variance effect
+### Park factors: the market prices the variance effect
 
 **Mechanism:** park does not favor the home team — both sides bat in it. What a
-hitter's park changes is *variance*. A higher run environment widens the
-distribution of run differential, compressing win probability toward .500. A
-team that should win 60% in a neutral park should win somewhat less in Coors.
-If the market under-adjusts, its probabilities will be too extreme in high-run
-parks.
+hitter's park changes is *variance*. Higher run environments widen the
+distribution of run differential, compressing win probability toward .500. If
+the market under-adjusts, its probabilities are too extreme in high-run parks.
 
-This is an interaction hypothesis and was tested as one, walk-forward:
+Tested as an interaction, walk-forward:
 
     logit(P(home win)) = a + b·market_logit + c·market_logit·park_centered
 
-The mechanism predicts c < 0. Result: **c = -0.0025, 95% CI (-1.01, +0.78).**
-Null. The quintile table is flat, with biases of -0.002, +0.004, +0.010, -0.000
-and +0.003 against a predicted monotone decline. Coors Field alone, the most
-extreme park in baseball, shows favorites at -0.008 against implied on 590
-games.
+The mechanism predicts c < 0. Result: **c = -0.0025, 95% CI (-1.01, +0.78)** —
+null. Coors Field alone, the most extreme park in baseball, shows favorites at
+-0.008 against implied over 590 games.
 
-Point-in-time park factors were computed on an expanding window with shrinkage
-toward league average, and validated by recovering baseball geography
-independently: the five lowest are Oracle, T-Mobile, Petco, Tropicana and Citi
-Field; the five highest are Chase, Fenway, Globe Life and Coors at 1.24.
+Park factors were computed point-in-time on an expanding window with shrinkage,
+and validated by independently recovering baseball geography: the five lowest
+are Oracle, T-Mobile, Petco, Tropicana and Citi Field; the highest is Coors at
+1.24.
 
-**The market fully prices a second-moment effect.** That is a more interesting
-null than a first-order one: the closing line is not merely getting team
-strength right, it correctly handles how run environment reshapes the outcome
-distribution.
+**The market fully prices a second-moment effect** — it is not merely getting
+team strength right, it correctly handles how run environment reshapes the
+outcome distribution.
 
-One diagnostic worth recording: the 2013 fold produced an interaction
-coefficient of -1.89 against -0.0003 to +0.0050 in every later fold. That fold
-trains on 2010-2012, when the expanding park calculation has the least history,
-and an unpenalized fit latched onto the noise. A useful illustration of why thin
-data and unpenalized models are a bad combination.
+### Model class is not the constraint
 
-## Model class is not the constraint
-
-Three families were compared under identical walk-forward evaluation, with
-stacking implemented using **nested splits** — the meta-learner trains only on
-out-of-fold base predictions, since fitting base and meta on the same rows
-teaches the meta to trust an overfit signal.
-
-Evaluated on 25,752 games (2012-2023):
+Three families under identical walk-forward evaluation, with stacking using
+**nested splits** so the meta-learner only ever sees out-of-fold base
+predictions:
 
 | Model | Log loss | Brier | Accuracy |
 |---|---|---|---|
 | Logistic regression | **0.67854** | 0.24278 | 56.8% |
 | Gradient boosting | 0.68002 | 0.24350 | 56.8% |
-| Stacked (logistic + GBM) | 0.67820 | 0.24262 | 57.0% |
+| Stacked | 0.67820 | 0.24262 | 57.0% |
 | Market | 0.67305 | 0.24013 | 58.1% |
 
-**Gradient boosting is worse than logistic regression** — by 0.0015 log loss,
-and worse in 9 of 11 seasons. Its calibration is worse in the buckets that
-matter: off by 1.3 points in the 0.4-0.5 range across 6,819 games.
+Gradient boosting is *worse*, in 9 of 11 seasons. Stacking is the decisive
+evidence: a meta-learner given both models had every chance to weight the GBM
+where it helped and effectively reproduced the logistic model instead.
 
-Stacking is the decisive evidence. A meta-learner given both models had every
-opportunity to weight the GBM where it helped, and effectively reproduced the
-logistic model instead. The GBM contributed no independent information.
+## Which metrics are worth using, and why
 
-With seven features whose relationships to the outcome are essentially linear
-and monotone, extra model capacity buys nothing and costs variance.
+Before building any pitcher feature, each candidate was tested for split-half
+reliability at the 8-start window the model uses:
 
-## Testing the margins
-
-Overall efficiency does not rule out local inefficiency. But subset search is
-where honest projects become dishonest ones — test twenty slices at the 5% level
-and one will look significant from noise alone.
-
-Two safeguards: every subset was specified in code with a stated mechanism
-*before* results were examined, and the 2024 season was sealed. **The lockbox
-was never opened, because it was never needed.**
-
-Exploration set 2012-2023, 25,752 games. "Gain" is market log loss minus model
-log loss, so positive means the model beat the market:
-
-| Subset | Mechanism | n | Gain | 95% CI | Beats market |
-|---|---|---|---|---|---|
-| All games | reference | 25,752 | -0.0055 | (-0.0067, -0.0043) | no |
-| First 15 games of season | little current-season info | 4,935 | -0.0042 | (-0.0069, -0.0012) | no |
-| Unproven starter | no track record to price | 3,566 | -0.0088 | (-0.0125, -0.0049) | no |
-| Doubleheader game 2 | bullpen depletion unpriced | 209 | -0.0109 | (-0.0289, +0.0070) | no |
-| Short-rest starter | non-standard rotation slot | 231 | -0.0027 | (-0.0210, +0.0166) | no |
-| Widest vig quintile | thin, low-confidence market | 5,151 | -0.0042 | (-0.0070, -0.0015) | no |
-| Largest disagreement decile | where our info differs most | 2,576 | -0.0245 | (-0.0328, -0.0161) | no |
-
-### The disagreement decile is the central finding
-
-The subset analysis was run three times: with weak team-level features, after
-the Statcast upgrade, and on the full fifteen-season dataset. Every subset
-improved with better features — except one.
-
-| Subset | Weak features | Statcast features |
+| Metric | r at k=8 | Verdict |
 |---|---|---|
-| All games | -0.00547 | -0.00436 |
-| First 15 games | -0.00352 | -0.00197 |
-| Unproven starter | -0.00700 | -0.00620 |
-| Widest vig quintile | -0.00941 | -0.00344 |
-| **Largest disagreement decile** | **-0.01824** | **-0.01979** |
+| Release velocity | **0.978** | Physical measurement; near-perfect |
+| Strikeout rate | **0.645** | Stabilized |
+| Walk rate | 0.427 | Nearly stabilized |
+| xwOBA on contact | 0.392 | Marginal |
+| Run expectancy per batter faced | 0.230 | Mostly noise |
+| Home run rate | 0.160 | Noise |
 
-Where the model diverges most from the closing line, a *better* model performs
-*worse*. On the full dataset this is the tightest negative in the project:
--0.0245, with a confidence interval nowhere near zero.
+**Descriptive accuracy and predictive value run opposite here.** Run expectancy
+per batter faced is the best description of what a pitcher did — sorting all
+68,020 starts by it returns Verlander's 2019 no-hitter, then German's 2023
+perfect game, then Braden's, Halladay's, Cain's and Hernandez's perfect games.
+Every perfect game of the era, found by a metric never told what one is.
 
-If the features contained information the market lacked, the disagreement decile
-is precisely where it would surface. That improving the model sharpens the
-deficit rather than closing it is direct evidence that the disagreement is noise
-— and that the market's advantage is not a feature that could simply be added.
+It is also the least reliable metric in the table, because it embeds
+batted-ball outcomes driven by defense, park and luck. It was excluded, along
+with home run rate — whose 0.160 independently replicates the known result that
+pitchers exert little control over home runs per fly ball.
 
-### A hypothesis that died correctly
+## The subset analysis
 
-**Mechanism:** velocity is publicly observable but not a headline number, and
-books price primarily off results. A starter throwing 2+ mph below his own
-baseline shows a physical signal of fatigue or injury before it reaches his ERA.
-Velocity delta is the most reliable measurement available (r = 0.978), so a 2
-mph deviation is signal, not noise.
+Overall efficiency does not rule out local inefficiency, but subset search is
+where honest projects become dishonest ones. Two safeguards: every subset was
+specified in code with a stated mechanism before results were examined, and the
+2024 season was sealed. **The lockbox was never opened, because it was never
+needed.**
 
-The test was run three times as odds coverage expanded:
+Exploration set 2012-2023, 25,752 games. Positive gain means the model beat the
+market:
 
-| Dataset | Team-games | Bias at -2.0 mph | Bias at -3.0 mph |
-|---|---|---|---|
-| 6 seasons | 21,367 | -0.0202 | untestable (n=40) |
-| 8 seasons | 32,913 | -0.0114 | -0.0525 (n=178) |
-| **13 seasons** | **55,391** | **-0.0036** | **-0.0234 (n=647)** |
+| Subset | Mechanism | n | Gain | 95% CI |
+|---|---|---|---|---|
+| All games | reference | 25,752 | -0.0055 | (-0.0067, -0.0043) |
+| First 15 games of season | little current-season info | 4,935 | -0.0042 | (-0.0069, -0.0012) |
+| Unproven starter | no track record to price | 3,566 | -0.0088 | (-0.0125, -0.0049) |
+| Doubleheader game 2 | bullpen depletion unpriced | 209 | -0.0109 | (-0.0289, +0.0070) |
+| Short-rest starter | non-standard rotation slot | 231 | -0.0027 | (-0.0210, +0.0166) |
+| Widest vig quintile | thin, low-confidence market | 5,151 | -0.0042 | (-0.0070, -0.0015) |
+| Largest disagreement decile | where our info differs most | 2,576 | -0.0245 | (-0.0328, -0.0161) |
 
-**The effect shrank by 82% as the sample tripled.** A real effect holds its
-magnitude and tightens its interval. This one decayed toward zero — the
-signature of regression to the mean.
+**The disagreement decile is the central finding.** The analysis was run three
+times — with weak features, after the Statcast upgrade, and on the full dataset.
+Every subset improved with better features except this one, which got *worse*
+(-0.0182 to -0.0198). Where the model diverges most from the closing line, a
+better model performs worse. If the features held information the market
+lacked, this is exactly where it would surface.
 
-The early result was directionally correct, monotonic across thresholds, and
-entirely spurious. Stopping at six seasons would have produced a "finding."
-
-### Why the deciles are left in the output
-
-The velocity analysis also reports deciles of velocity delta. In the six-season
-run, decile 4 — a trivial -0.09 to -0.26 mph range with no plausible mechanism —
-showed a bias of -0.019, the same magnitude as the pre-registered primary test,
-with an interval that nearly excluded zero. On the full dataset it is +0.0016.
-
-That is what noise looks like. Had the analysis gone fishing across deciles
-instead of committing to a threshold in advance, decile 4 would have been
-reported as a finding.
-
-## Design: how leakage is prevented
-
-Season-long statistics computed over a full season and then used to predict
-games *within* that season produce impressive accuracy that does not exist out
-of sample. Three choices rule this out structurally:
-
-1. **Single chronological pass.** Features are built in one date-ordered loop.
-   Each row's features are emitted from accumulator state, and only then is that
-   game's result folded into the state. A game cannot inform its own prediction.
-2. **Walk-forward evaluation.** Models train on seasons strictly before the
-   season they predict. No random train/test split is used anywhere. Stacking
-   uses nested splits.
-3. **No post-game columns.** The raw source includes team rank, games back, and
-   streak — all of which already contain the outcome of the row they sit on.
-
-Rate metrics are accumulated as summed numerators over summed denominators, and
-every metric tracks its numerator and denominator as a **matched pair** — a
-start missing a metric contributes to neither side. An earlier version counted a
-missing xwOBA as zero while still counting its batters, silently recording every
-pre-2015 start as a perfect performance.
-
-**Career start counts were deliberately excluded.** The count rises
-monotonically with the calendar, making it a proxy for date that a model will
-happily exploit.
+**Why the deciles are left in the output:** the velocity analysis also reports
+deciles. In the six-season run, decile 4 — a trivial -0.09 to -0.26 mph range
+with no plausible mechanism — showed a bias of -0.019, the same magnitude as
+the pre-registered primary test. On the full dataset it is +0.0016. That is what
+noise looks like, and had the analysis gone fishing across deciles instead of
+committing to a threshold in advance, it would have been reported as a finding.
 
 ## Three bugs caught by independent validation
 
-Every join is checked against a source produced independently. Three real bugs
-surfaced this way, none visible from inspecting a single source.
+Every join is checked against a source produced independently. None of these
+would have been visible from inspecting a single source.
 
-**Doubleheaders swapped.** The initial odds join matched 99.86% of games but
-agreed on final score for only 98.75%. The failures were almost all
-doubleheaders with game 1 and game 2 reversed: the odds file orders by betting
-rotation number, which does not follow Retrosheet's scheduled sequence. The fix
-emits both orderings and keeps whichever the independent score confirms.
-Agreement rose to 99.83%.
+**Doubleheaders swapped.** The odds join matched 99.86% of games but agreed on
+final score for only 98.75%. The failures were doubleheaders with game 1 and
+game 2 reversed — the odds file orders by betting rotation number, which does
+not follow Retrosheet's scheduled sequence. Emitting both orderings and keeping
+whichever the independent score confirms raised agreement to 99.83%.
 
-**Spring training contamination.** The Statcast pull initially returned 2,554
-games for a 2,429-game season and 1,067 pitchers where only 831 appeared in the
-regular season. Those stats would have corrupted every rolling pitcher average.
+**Spring training contamination.** The Statcast pull returned 2,554 games for a
+2,429-game season and 1,067 pitchers where only 831 appeared in the regular
+season. Those stats would have corrupted every rolling pitcher average.
 
 **A median of American odds is meaningless.** American odds are discontinuous —
-no valid line exists strictly between -100 and +100. Taking a median across
-books straddling that gap produces arithmetic nonsense: four books at
+no valid line exists strictly between -100 and +100. Four books at
 [-110, -104, +100, +105] give a "median" of -2, which is not a price. This
-surfaced only because the JSON dataset could be compared against the Excel
-archive on their 2021 overlap: correlation was 0.628 where it should have been
-near 1. Computing consensus in probability space raised it to **0.9975**, with
-98.6% of games agreeing within 2 probability points.
+surfaced only because two odds sources overlap in 2021: their correlation was
+0.628 where it should have been near 1. Computing consensus in probability space
+raised it to **0.9975**, with 98.6% of games agreeing within 2 probability
+points.
+
+## How leakage is prevented
+
+1. **Single chronological pass.** Features are emitted from accumulator state,
+   and only then is the game's result folded in. A game cannot inform its own
+   prediction.
+2. **Walk-forward evaluation.** Models train only on seasons strictly before the
+   one they predict. No random split anywhere. Stacking uses nested splits.
+3. **No post-game columns.** Team rank, games back and streak all contain the
+   outcome of the row they sit on. None are used.
+4. **Matched numerator/denominator pairs.** A start missing a metric contributes
+   to neither side of its ratio. An earlier version counted a missing xwOBA as
+   zero while still counting its batters, silently recording every pre-2015
+   start as a perfect performance.
+5. **No monotonic counters.** Career start counts rise with the calendar, making
+   them a date proxy a model will exploit.
 
 ## Data
 
 **Game logs:** [Retrosheet](https://www.retrosheet.org/gamelogs/), 2010-2024 —
-one row per game with both starting pitchers. 34,015 games, zero duplicate IDs.
+34,015 games, both starting pitchers, zero duplicate IDs.
 
-**Statcast / PITCHf/x:** 9.99 million pitches via pybaseball, regular season
-only, aggregated to 68,020 starting-pitcher outings. Release velocity and run
-expectancy are available from 2010; xwOBA, launch speed and spin rate require
-Statcast cameras and begin in 2015.
+**Statcast / PITCHf/x:** 9.99M pitches via pybaseball, regular season only,
+aggregated to 68,020 starts. Velocity and run expectancy from 2010; xwOBA and
+launch data require Statcast cameras and begin in 2015.
 
-**Odds:** two independent sources, unioned.
+**Odds:** two independent sources. 2010-2019 from the SportsBookReview Excel
+archive (one aggregated line); 2021-2024 from a JSON dataset (median across ~6
+books, each de-vigged individually in probability space, with games dropped
+where books disagreed by more than 10 probability points).
 
-- 2010-2019: SportsBookReview Excel archive, one aggregated closing line.
-- 2021-2024: JSON dataset, median across ~6 books, each de-vigged individually
-  in probability space. Games where books disagreed by more than 10 probability
-  points were dropped as unreliable.
+32,523 of 34,015 games matched (95.6%), 99.83% score agreement.
 
-32,523 of 34,015 games matched to a closing price (95.6%), with 99.83% score
-agreement against Retrosheet.
+**2020 is excluded** — the 60-game season had a universal DH, seven-inning
+doubleheaders, and a runner on second in extras.
 
-**2020 is excluded.** The 60-game season had a universal DH, seven-inning
-doubleheaders, and a runner placed on second in extra innings.
+## Other findings
 
-Odds files must be downloaded manually — both sources block automated access.
-See `data/README.md`.
-
-## Findings about the game and its market
-
-**Home-field advantage has declined sharply**, from .5593 in 2010 to .5216 in
-2024. A fixed home-field constant would be badly miscalibrated across this span.
-
-**Bookmaker hold has risen with the retail era.** Median vig is 2.79% across the
-2010-2019 aggregated lines and 4.22% across the 2021-2024 retail books.
-
-**The market is extremely well calibrated.** Across every probability bucket
-with meaningful sample, predicted and actual win rates differ by under 1.1
-percentage points; in the largest bucket (10,855 games) the gap is 0.0000.
-
-**Short-rest games are hard for everyone.** Market log loss on starters with 4
-or fewer days rest is 0.698 against 0.673 overall — the market's own accuracy
-degrades on non-standard rotation slots, though not enough to create an edge.
-
-**Days of rest has a small negative association with winning** (r = -0.016),
-opposite the intuitive direction and unlikely to be causal. Rest is confounded
-with the reasons it occurs: a skipped rotation slot, a starter pushed back for a
-minor issue, a team returning from travel.
-
-**One pre-registered mechanism was falsified.** Wide vig was predicted to signal
-thin, low-confidence markets. Those games are in fact easier to predict: wide vig
-tracks lopsided matchups, where books charge more on heavy favorites.
+- **Home-field advantage has declined sharply**, .5593 in 2010 to .5216 in 2024.
+- **Bookmaker hold rose with the retail era** — 2.79% on 2010-2019 aggregated
+  lines, 4.22% across 2021-2024 retail books.
+- **Short-rest games are hard for everyone.** Market log loss is 0.698 there
+  against 0.673 overall; its own accuracy degrades on non-standard rotation
+  slots, though not enough to create an edge.
+- **Days of rest correlates negatively with winning** (r = -0.016), opposite the
+  intuitive direction — rest is confounded with the reasons it occurs.
+- **One pre-registered mechanism was falsified.** Wide vig was predicted to
+  signal thin markets; those games are in fact easier to predict, because wide
+  vig tracks lopsided matchups.
 
 ## Known limitations
 
 - **The JSON odds sample is not random.** Games dropped for book disagreement
-  are systematically those books found hardest to price, which is plausibly
-  where mispricing lives. An unreliable price is worse than no price, but the
-  remaining sample should not be treated as representative.
-- **Innings pitched is approximated.** Statcast does not expose outs recorded
-  per pitcher, so workload is inferred from batters faced and last inning.
-- **Velocity baselines drift with age.** The baseline is a career average
-  dominated by peak years, so recent velocity sits systematically below it
-  (median -0.13 mph). A rolling prior-season baseline would be cleaner.
-- **2010 and 2011 match at only 93%** against the odds archive, versus 99%+ for
-  2012-2019. Not diagnosed.
-- **No weather, lineup, or injury features.** These are the most likely sources
-  of the market's remaining advantage, and the hardest to obtain historically.
+  are systematically those books found hardest to price — plausibly where
+  mispricing lives.
+- **Innings pitched is approximated** from batters faced and last inning, since
+  Statcast does not expose outs recorded per pitcher.
+- **Velocity baselines drift with age**, since the baseline is a career average
+  dominated by peak years.
+- **2010 and 2011 match at only 93%** against the odds archive. Not diagnosed.
+- **No weather, lineup, or injury data.**
 
 ## Next steps
 
-The four failed attempts above point in a consistent direction: the remaining
-gap is unlikely to close through better modeling of publicly available box-score
-data. What the market has that this model does not is almost certainly
-*announced lineups, late scratches, weather at first pitch, and money from
-informed participants* — none of which are available in free historical form.
+The four failed attempts point one direction: the remaining gap will not close
+through better modeling of public box-score data. What the market has and this
+model does not is almost certainly announced lineups, late scratches, weather at
+first pitch, and money from informed participants — none available in free
+historical form.
 
-Stated plainly: the productive next step is better data, not a better model.
+Stated plainly: **the productive next step is better data, not a better model.**
 
 ## Repo layout
 
@@ -381,11 +325,11 @@ Stated plainly: the productive next step is better data, not a better model.
 | `src/build_spine.py` | Combine seasons, build unique game IDs |
 | `src/build_features.py` | Point-in-time team and Elo features |
 | `src/inspect_odds.py` | Inspect an odds workbook before parsing |
-| `src/build_odds.py` | Parse Excel archive, map team codes, de-vig |
+| `src/build_odds.py` | Parse Excel archive, map teams, de-vig |
 | `src/inspect_odds_json.py` | Inspect the JSON odds dataset |
-| `src/build_odds_json.py` | Parse JSON odds; consensus in probability space |
-| `src/compare_odds_sources.py` | Cross-source price validation on 2021 |
-| `src/join_odds.py` | Union both sources; validate against scores |
+| `src/build_odds_json.py` | Parse JSON odds in probability space |
+| `src/compare_odds_sources.py` | Cross-source price validation |
+| `src/join_odds.py` | Union sources; validate against scores |
 | `src/fetch_statcast.py` | Pull pitch data, cached and resumable |
 | `src/build_pitcher_starts.py` | Aggregate pitches into per-start lines |
 | `src/stabilization.py` | Split-half reliability by sample size |
@@ -402,41 +346,7 @@ Stated plainly: the productive next step is better data, not a better model.
 | `src/compare_models.py` | Logistic vs. GBM vs. nested stacking |
 | `src/find_edges.py` | Pre-registered subset analysis |
 | `src/velocity_edge.py` | Pre-registered velocity-decline test |
-
-## Reproducing
-
-    conda create -n mlb python=3.12 -y
-    conda activate mlb
-    pip install pybaseball pandas pyarrow scikit-learn matplotlib openpyxl
-
-Download game logs and pitch data (Windows):
-
-    for %y in (2010 2011 2012 2013 2014 2015 2016 2017 2018 2019 2021 2022 2023 2024) do python src\fetch_gamelogs.py %y
-    for %y in (2010 2011 2012 2013 2014 2015 2016 2017 2018 2019 2021 2022 2023 2024) do python src\fetch_statcast.py %y
-
-Download odds manually into `data/raw/odds/` (see `data/README.md`), then:
-
-    python src/build_spine.py
-    python src/build_features.py
-    python src/build_odds.py
-    python src/build_odds_json.py
-    python src/compare_odds_sources.py
-    python src/join_odds.py
-    python src/build_pitcher_starts.py
-    python src/stabilization.py
-    python src/build_pitcher_features.py
-    python src/build_bullpen.py
-    python src/bullpen_screen.py
-    python src/build_park.py
-    python src/evaluate_market.py
-    python src/evaluate_pitcher.py
-    python src/compare_models.py
-    python src/find_edges.py
-    python src/velocity_edge.py
-    python src/park_edge.py
-
-Data files are not committed. Retrosheet and Statcast downloads are scripted;
-odds workbooks are not.
+| `src/make_charts.py` | Figures |
 
 ## Attribution
 
